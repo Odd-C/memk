@@ -6,9 +6,10 @@
 
 No runtime dependencies — SQLite and the standard library, nothing else. No embedding model, no vector database, no service.
 
-**MIT licence** · **Python 3.10+** · **Zero runtime dependencies** · **Alpha**
-
-*Plain text on purpose: a build badge is an image fetched from a third-party server on every page view, and this project makes no external calls.*
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Dependencies: none](https://img.shields.io/badge/dependencies-none-success.svg)](#install)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](ROADMAP.md)
 
 **Contents**
 [What it is](#what-it-is) ·

@@ -6,9 +6,10 @@
 
 零运行时依赖 —— 只用 SQLite 和标准库，别无其他。没有 embedding 模型，没有向量数据库，没有服务。
 
-**MIT 许可** · **Python 3.10+** · **零运行时依赖** · **Alpha**
-
-*刻意用纯文本：徽章图片会在每次打开页面时向第三方服务器发起请求，而本项目不产生任何对外调用。*
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Dependencies: none](https://img.shields.io/badge/dependencies-none-success.svg)](#安装)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](ROADMAP.md)
 
 **目录**
 [这是什么](#这是什么) ·
