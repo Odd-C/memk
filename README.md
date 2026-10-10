@@ -10,6 +10,11 @@ python3 -m memk.selftest          # 27 checks, end to end, on a temporary databa
 
 **MIT** · **Python 3.10+** · **zero dependencies** · **status: alpha**
 
+```bash
+git clone https://github.com/Odd-C/memk.git && cd memk
+python3 -m memk.selftest          # no install step; nothing to build
+```
+
 ---
 
 ## Why this exists

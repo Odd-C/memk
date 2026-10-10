@@ -25,7 +25,9 @@ dependencies = []
 memk = "memk.cli:main"
 
 [project.urls]
-Documentation = "DESIGN.md"
+Homepage = "https://github.com/Odd-C/memk"
+Documentation = "https://github.com/Odd-C/memk/blob/main/DESIGN.md"
+Runbook = "https://github.com/Odd-C/memk/blob/main/RUNBOOK.md"
 
 [tool.setuptools]
 packages = ["memk"]
