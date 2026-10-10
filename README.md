@@ -5,7 +5,7 @@ the standard library, nothing else. No embedding model, no vector database, no
 service. Everything below runs on a laptop with the Python that ships with it.
 
 ```bash
-python3 -m memk.selftest          # 23 checks, end to end, on a temporary database
+python3 -m memk.selftest          # 27 checks, end to end, on a temporary database
 ```
 
 **MIT** · **Python 3.10+** · **zero dependencies** · **status: alpha**
@@ -129,7 +129,54 @@ Three rules make it safe to have an optional channel at all:
 | `embed.py` | The optional embedding channel: a self-declaring interface, an OpenAI-compatible client, a local offline model, and a test double that announces itself. |
 | `vectors.py` | The vector companion in SQLite: packed float32, provenance per vector, no mixing across models. |
 | `session.py` | The seam a host talks to: ingest, hooks (`on_turn_start`, `on_pre_compress`, `on_session_end`), packet, health. |
+| `backup.py` | Consistent snapshots, a rolling window plus monthly permanents, and verification that restores rather than checks for a file. |
+| `dedupe.py` | Exact / substring / prefix-similar detection. The first two resolve themselves; the third is reported and never resolved. |
+| `compact.py` | View pressure relief: demote what was never used, shorten what is long, and refuse to shorten a row whose anchors would be lost. |
+| `golden.py` | The golden recall set: hit\@k, MRR, miss diagnosis, and forbidden-id violations. |
 | `cli.py` | Everything above, drivable by a human. Mutation commands default to a dry run. |
+
+## Operations
+
+The ops layer is part of the package, not a folder of scripts beside it, because the
+kernel owns its schema and a script that guesses at the schema is a bug waiting for a
+schema change.
+
+```bash
+# snapshot, then prove it by restoring it
+memk backup create
+memk backup verify <snapshot>          # integrity_check + row counts vs the manifest
+memk backup restore <snapshot> --to /tmp/restored.sqlite3
+memk backup status                     # window contents, with "copies is not days" stated
+
+memk dedupe                            # report
+memk dedupe --apply                    # archive the automatic losers (never deletes)
+
+memk compact                           # plan
+memk compact --apply                   # snapshot first, then apply
+
+memk golden run --file cases.json      # hit@1/3/10, MRR, miss diagnosis, forbidden hits
+```
+
+Two behaviours worth calling out, because they are the difference between a useful
+ops layer and a dangerous one:
+
+- **verification restores.** `backup verify` opens the snapshot, runs
+  `PRAGMA integrity_check`, compares the checksum and the row counts against the
+  manifest written beside it. A corrupted snapshot is refused, and the same refusal
+  blocks a restore from clobbering a live store.
+- **compaction fails closed.** If shortening a row would drop an anchor — a URL, a
+  path, a version, a date, an environment variable name, a long id — the row is left
+  exactly as it was and the refusal is reported with the anchors it would have lost.
+
+Observed on a live run:
+
+```
+backup    ok=true  integrity=ok  counts={'memories': 3, ...}  problems=[]
+dedupe    live=3   auto_mergeable=1  needs_review=0
+compact   view 29 chars / budget 5600 · planned_shorten=1 · refused_anchor_loss=0
+golden    cases=4  hit@1=3  hit@3=3  MRR=0.75  misses=1 (no_candidates)  forbidden=0
+restore   restored=true  source_rows=3  restored_rows=3  consistent=true
+```
 
 ## Invariants
 

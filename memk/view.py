@@ -18,7 +18,7 @@ import json
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from . import scope as scope_mod
 from .util import sha256_text, utc_now
@@ -27,6 +27,9 @@ from .store import MemoryRecord, rows_for_view
 #: Character budget for the injected view. Kept below the prompt-side cap so the
 #: view can never be the reason a turn overflows.
 DEFAULT_BUDGET = 5600
+#: Targets the injection layer renders. ``memory`` carries the rules and durable
+#: facts; ``user`` carries the profile. Everything else is recall-only.
+VIEW_TARGETS = ("memory", "user")
 META_PREFIX = "view_render"
 
 
@@ -60,12 +63,12 @@ def render(
     conn: sqlite3.Connection,
     scope: scope_mod.Scope,
     *,
-    target: str = "memory",
+    targets: Sequence[str] = VIEW_TARGETS,
     budget: int = DEFAULT_BUDGET,
 ) -> RenderResult:
     """Render the view, pinned-first, stopping at the budget."""
 
-    records = rows_for_view(conn, scope, target=target, limit=400)
+    records = rows_for_view(conn, scope, targets=targets, limit=400)
     lines: list[str] = []
     rendered: list[str] = []
     skipped: list[str] = []
@@ -149,7 +152,10 @@ def sync(
     if hand_edit and adopt_hand_edits and previous_text:
         from . import store
 
-        existing = {r.content.strip() for r in rows_for_view(conn, scope, target="memory", limit=400)}
+        existing = {
+            r.content.strip()
+            for r in rows_for_view(conn, scope, targets=VIEW_TARGETS, limit=400)
+        }
         for line in previous_text.splitlines():
             text = line.strip().lstrip("★").strip()
             if not text or text in existing:

@@ -15,7 +15,24 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import admission, embed, freshness, journal, lexer, packet, recall, scope as scope_mod, store, timeline, vectors, view
+from . import (
+    admission,
+    backup as backup_mod,
+    compact as compact_mod,
+    dedupe as dedupe_mod,
+    embed,
+    freshness,
+    golden as golden_mod,
+    journal,
+    lexer,
+    packet,
+    recall,
+    scope as scope_mod,
+    store,
+    timeline,
+    vectors,
+    view,
+)
 from .schema import open_store, schema_version
 
 
@@ -426,6 +443,115 @@ def cmd_show_freshness(args: argparse.Namespace) -> int:
     return 0
 
 
+def _default_backup_dir(args: argparse.Namespace) -> Path:
+    raw = getattr(args, "dir", "") or ""
+    if raw:
+        return Path(raw).expanduser()
+    return _db_path(args).parent / "backups"
+
+
+def cmd_backup_create(args: argparse.Namespace) -> int:
+    conn = open_store(_db_path(args))
+    entry = backup_mod.create(conn, _default_backup_dir(args), kind=args.kind)
+    _emit(entry.as_dict(), True)
+    conn.close()
+    return 0
+
+
+def cmd_backup_list(args: argparse.Namespace) -> int:
+    _emit([entry.as_dict() for entry in backup_mod.list_backups(_default_backup_dir(args))], True)
+    return 0
+
+
+def cmd_backup_verify(args: argparse.Namespace) -> int:
+    report = backup_mod.verify(args.path)
+    _emit(report, True)
+    return 0 if report["ok"] else 1
+
+
+def cmd_backup_restore(args: argparse.Namespace) -> int:
+    result = backup_mod.restore(args.path, args.to, overwrite=args.overwrite)
+    _emit(result, True)
+    return 0 if result.get("restored") else 1
+
+
+def cmd_backup_prune(args: argparse.Namespace) -> int:
+    removed = backup_mod.prune(
+        _default_backup_dir(args), keep_daily=args.keep_daily, keep_monthly=args.keep_monthly
+    )
+    _emit({"removed": removed, "count": len(removed)}, True)
+    return 0
+
+
+def cmd_backup_status(args: argparse.Namespace) -> int:
+    _emit(backup_mod.describe(_default_backup_dir(args)), True)
+    return 0
+
+
+def cmd_dedupe(args: argparse.Namespace) -> int:
+    conn = open_store(_db_path(args))
+    if args.json or args.apply:
+        result = dedupe_mod.apply(
+            conn, _scope(args), min_prefix=args.min_prefix, apply=args.apply
+        )
+        _emit(result, True)
+    else:
+        _emit(dedupe_mod.describe(conn, _scope(args)), True)
+    conn.close()
+    return 0
+
+
+def cmd_compact(args: argparse.Namespace) -> int:
+    conn = open_store(_db_path(args))
+    plan_data = compact_mod.plan(
+        conn,
+        _scope(args),
+        max_chars_per_row=args.max_chars,
+        stale_days=args.stale_days,
+    )
+    result = compact_mod.apply(
+        conn,
+        _scope(args),
+        plan_data,
+        apply=args.apply,
+        backup_dir=str(_default_backup_dir(args)) if args.apply and not args.no_backup else None,
+    )
+    payload = {
+        "pressure": compact_mod.pressure(conn, _scope(args)),
+        "planned_shorten": result["planned_shorten"],
+        "planned_demote": result["planned_demote"],
+        "refused_anchor_loss": len(plan_data["refused"]),
+        "refusals": plan_data["refused"][:5],
+        "changed": result["changed"],
+        "backup": result["backup"],
+        "applied": result["applied"],
+    }
+    _emit(payload, True)
+    conn.close()
+    return 0
+
+
+def cmd_golden_run(args: argparse.Namespace) -> int:
+    memory = _memory(args)
+    cases = golden_mod.load(args.file or None)
+    report = golden_mod.run(
+        memory.conn,
+        memory.scope,
+        cases,
+        limit=args.limit,
+        embedder=memory.embedder,
+    )
+    _emit(report, True)
+    memory.close()
+    return 0
+
+
+def cmd_golden_example(args: argparse.Namespace) -> int:
+    path = golden_mod.write_example(args.write)
+    _emit({"written": path, "cases": len(golden_mod.EXAMPLE_CASES)}, True)
+    return 0
+
+
 def cmd_selftest(args: argparse.Namespace) -> int:
     from . import selftest
 
@@ -602,6 +728,56 @@ def build_parser() -> argparse.ArgumentParser:
     selftest = sub.add_parser("selftest", help="run the built-in self test")
     selftest.add_argument("--keep", action="store_true")
     selftest.set_defaults(func=cmd_selftest)
+
+    bk = sub.add_parser("backup", help="snapshots, verification and restore drills")
+    bk_sub = bk.add_subparsers(dest="backup_command", required=True)
+    bc = bk_sub.add_parser("create", help="take a consistent snapshot")
+    bc.add_argument("--dir", default="", help="backup directory (default: <db>/backups)")
+    bc.add_argument("--kind", default="auto", choices=["auto", "daily", "monthly"])
+    bc.set_defaults(func=cmd_backup_create)
+    bl = bk_sub.add_parser("list", help="list snapshots, newest first")
+    bl.add_argument("--dir", default="")
+    bl.set_defaults(func=cmd_backup_list)
+    bv = bk_sub.add_parser("verify", help="restore-drill one snapshot")
+    bv.add_argument("path")
+    bv.set_defaults(func=cmd_backup_verify)
+    br = bk_sub.add_parser("restore", help="copy a snapshot into place")
+    br.add_argument("path")
+    br.add_argument("--to", required=True, help="target database path")
+    br.add_argument("--overwrite", action="store_true", help="replace an existing target")
+    br.set_defaults(func=cmd_backup_restore)
+    bp = bk_sub.add_parser("prune", help="drop old snapshots")
+    bp.add_argument("--dir", default="")
+    bp.add_argument("--keep-daily", type=int, default=backup_mod.DEFAULT_KEEP_DAILY)
+    bp.add_argument("--keep-monthly", type=int, default=0, help="0 keeps every monthly snapshot")
+    bp.set_defaults(func=cmd_backup_prune)
+    bs = bk_sub.add_parser("status", help="what the window currently holds")
+    bs.add_argument("--dir", default="")
+    bs.set_defaults(func=cmd_backup_status)
+
+    dd = sub.add_parser("dedupe", help="find and archive duplicate rows")
+    dd.add_argument("--min-prefix", type=int, default=dedupe_mod.DEFAULT_MIN_PREFIX)
+    dd.add_argument("--apply", action="store_true", help="archive the automatic losers")
+    dd.add_argument("--json", action="store_true")
+    dd.set_defaults(func=cmd_dedupe)
+
+    cp = sub.add_parser("compact", help="relieve injection-view pressure")
+    cp.add_argument("--max-chars", type=int, default=compact_mod.DEFAULT_MAX_CHARS_PER_ROW)
+    cp.add_argument("--stale-days", type=int, default=compact_mod.DEFAULT_STALE_DAYS)
+    cp.add_argument("--apply", action="store_true")
+    cp.add_argument("--no-backup", action="store_true", help="skip the pre-apply snapshot")
+    cp.add_argument("--dir", default="", help="backup directory")
+    cp.set_defaults(func=cmd_compact)
+
+    gd = sub.add_parser("golden", help="golden recall set")
+    gd_sub = gd.add_subparsers(dest="golden_command", required=True)
+    gr = gd_sub.add_parser("run", help="measure retrieval with the real path", parents=[common])
+    gr.add_argument("--file", default="", help="JSON case list (default: shape examples)")
+    gr.add_argument("--limit", type=int, default=10)
+    gr.set_defaults(func=cmd_golden_run)
+    ge = gd_sub.add_parser("example", help="write the example case file")
+    ge.add_argument("--write", default="golden-cases.json")
+    ge.set_defaults(func=cmd_golden_example)
 
     return parser
 

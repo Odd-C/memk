@@ -20,8 +20,12 @@ from typing import Any, Callable
 
 from . import (
     admission,
+    backup as backup_mod,
+    compact as compact_mod,
+    dedupe as dedupe_mod,
     embed as embed_mod,
     freshness,
+    golden as golden_mod,
     journal,
     lexer,
     packet,
@@ -336,9 +340,22 @@ def t_view(conn, ctx):
         conn, scope=scope, target="memory", content="安全红线：凭据绝不写入记忆。",
         authority="user", source="operator", importance=0.1, pinned=True,
     )
+    # The profile target belongs in the view too: a view that rendered only
+    # target=memory would drop the profile from every prompt.
+    profile_id = store.put_memory(
+        conn, scope=scope, target="user", content="画像示例条目：用于验证画像目标会被注入。",
+        authority="user", source="operator", importance=0.4,
+    )
+    # A project-scoped row is recall-only by design and must not be injected.
+    project_id = store.put_memory(
+        conn, scope=scope, target="project", content="项目细节：本行不应进入注入视图。",
+        authority="operator", source="operator", importance=0.9,
+    )
     rendered = view.render(conn, scope, budget=1500)
     assert rendered.char_count <= 1500 + 200, rendered.char_count
     assert pinned_id in rendered.rendered_ids, "pinned row was cut by the budget"
+    assert profile_id in rendered.rendered_ids, "the profile target was not injected"
+    assert project_id not in rendered.rendered_ids, "a recall-only target was injected"
     assert rendered.skipped_ids, "expected some rows to be skipped at this budget"
 
     path = Path(ctx["dir"]) / "MEMORY.md"
@@ -357,6 +374,9 @@ def t_view(conn, ctx):
         "rendered": len(rendered.rendered_ids),
         "skipped": len(rendered.skipped_ids),
         "pinned_kept": pinned_id in rendered.rendered_ids,
+        "profile_injected": profile_id in rendered.rendered_ids,
+        "project_excluded": project_id not in rendered.rendered_ids,
+        "view_targets": list(view.VIEW_TARGETS),
         "hand_edit_detected": second.hand_edit_detected,
         "adopted": len(adopted_rows),
         "fingerprint": first.fingerprint[:12],
@@ -628,6 +648,234 @@ def t_schema_additive(conn, ctx):
     assert after == before, f"re-opening the store changed the row count: {before} -> {after}"
     assert "vector_records" in tables, tables
     return {"rows_before": before, "rows_after": after, "schema_version": version, "tables": tables}
+
+
+@check("backup: a snapshot is verified by restoring it, not by existing")
+def t_backup(conn, ctx):
+    directory = Path(ctx["dir"]) / "backups"
+    entry = backup_mod.create(conn, directory)
+    assert Path(entry.path).exists(), entry.as_dict()
+    assert entry.counts.get("memories", 0) > 0, entry.counts
+
+    report = backup_mod.verify(entry.path)
+    assert report["ok"], report["problems"]
+    assert report["observed"]["integrity_check"].lower() == "ok", report["observed"]
+
+    # Corrupt one byte: verification must refuse it, not report success.
+    raw = bytearray(Path(entry.path).read_bytes())
+    raw[len(raw) // 2] ^= 0xFF
+    Path(entry.path).write_bytes(bytes(raw))
+    broken = backup_mod.verify(entry.path)
+    assert not broken["ok"], "a corrupted snapshot passed verification"
+    assert any("checksum" in problem or "integrity" in problem for problem in broken["problems"]), broken
+
+    # A refusal must also block a restore that would have overwritten a store.
+    refused = backup_mod.restore(entry.path, Path(ctx["dir"]) / "restored.sqlite3")
+    assert not refused["restored"] and refused["reason"] == "verification_failed", refused
+
+    # Now take a good snapshot and prove the round trip.
+    fresh = backup_mod.create(conn, directory, kind="daily")
+    before = store.stats(conn, _scope())["rows"]
+    restored_path = Path(ctx["dir"]) / "restored.sqlite3"
+    outcome = backup_mod.restore(fresh.path, restored_path, overwrite=True)
+    assert outcome["restored"], outcome
+    restored = open_store(restored_path)
+    try:
+        after = store.stats(restored, _scope())["rows"]
+        integrity = str(restored.execute("PRAGMA integrity_check").fetchone()[0])
+    finally:
+        restored.close()
+    assert after == before and integrity.lower() == "ok", (before, after, integrity)
+    return {
+        "snapshot_kind": entry.kind,
+        "verified_ok": report["ok"],
+        "corruption_detected": not broken["ok"],
+        "corruption_problems": broken["problems"][:2],
+        "restore_refused_when_broken": not refused["restored"],
+        "rows_before": before,
+        "rows_after_restore": after,
+        "restored_integrity": integrity,
+    }
+
+
+@check("dedupe: losers are archived, pinned rows never lose, prefix pairs only reported")
+def t_dedupe(conn, ctx):
+    scope = _scope("dupe-user")
+    # Long enough to clear the dedupe scanner's prefix floor (24 characters), which
+    # exists so a short row is not treated as a subset of an unrelated longer one.
+    text = "用户拍板：生产发布固定在每周五下午执行，回滚窗口为两小时，超时立即人工介入。"
+    first = store.put_memory(
+        conn, scope=scope, target="memory", content=text,
+        authority="user", source="operator", importance=0.6,
+    )
+    second = store.put_memory(
+        conn, scope=scope, target="memory", content=text,
+        authority="user", source="operator", importance=0.6,
+    )
+    container = store.put_memory(
+        conn, scope=scope, target="memory",
+        content=text + " 另外：发布前必须冻结分支，回滚演练每月一次。",
+        authority="user", source="operator", importance=0.6,
+    )
+    # A prefix pair: same opening, different tails, neither containing the other.
+    # Each half may carry something the other does not, so this must never resolve
+    # itself -- it is reporting only.
+    prefix_left = store.put_memory(
+        conn, scope=scope, target="ops",
+        content="上线流程第一步：先拉取全部代码并运行完整的测试套件，然后进入人工确认环节再发布。",
+        authority="operator", source="operator", importance=0.5,
+    )
+    prefix_right = store.put_memory(
+        conn, scope=scope, target="ops",
+        content="上线流程第一步：先拉取全部代码并运行完整的测试套件，然后直接自动发布到生产环境。",
+        authority="operator", source="operator", importance=0.5,
+    )
+    # A pinned pair where one contains the other: the pinned row is the shorter one,
+    # so the automatic verdict would archive a pinned row. It must be refused instead.
+    pinned_short = store.put_memory(
+        conn, scope=scope, target="memory", content="安全红线：凭据只能保存位置指针，绝不写入记忆正文。",
+        authority="user", source="operator", importance=0.2, pinned=True,
+    )
+    pinned_long = store.put_memory(
+        conn, scope=scope, target="memory",
+        content="安全红线：凭据只能保存位置指针，绝不写入记忆正文，也不写入日志与备份文件。",
+        authority="user", source="operator", importance=0.2, pinned=True,
+    )
+
+    plan = dedupe_mod.scan(conn, scope)
+    auto_kinds = {pair["kind"] for pair in plan["auto"]}
+    manual_kinds = {pair["kind"] for pair in plan["manual"]}
+    assert "exact" in auto_kinds, plan
+    assert "substring" in auto_kinds, plan
+    assert "prefix" in manual_kinds, plan
+
+    result = dedupe_mod.apply(conn, scope, plan, apply=False)
+    assert result["archived"] == [] and not result["applied"], result
+    assert result["to_archive"], result
+    assert len(result["to_archive"]) == len(set(result["to_archive"])), result["to_archive"]
+    live_after_preview = len(store.rows_for_view(conn, scope, limit=50))
+
+    applied = dedupe_mod.apply(conn, scope, plan, apply=True)
+    assert applied["applied"] and applied["archived"], applied
+    assert applied["archived"] == applied["to_archive"], applied
+
+    for memory_id in applied["archived"]:
+        record = store.get(conn, memory_id)
+        assert record is not None, f"dedupe deleted a row instead of archiving: {memory_id}"
+        assert record.lifecycle == "archived", record.lifecycle
+    for pinned in (pinned_short, pinned_long):
+        record = store.get(conn, pinned)
+        assert record is not None and record.lifecycle != "archived", (
+            "a pinned row was archived by dedupe"
+        )
+    survivors = {record.id for record in store.rows_for_view(conn, scope, limit=50)}
+    # The containing row says everything the other two say, so it is the survivor and
+    # both shorter copies go. One live row per fact is the contract; which id wins is
+    # the scanner's decision, and it must be the informative one.
+    assert container in survivors, "the row that contains the others should have survived"
+    assert first not in survivors and second not in survivors, survivors
+    assert {first, second} <= set(applied["archived"]), applied["archived"]
+    return {
+        "auto_pairs": len(plan["auto"]),
+        "manual_pairs": len(plan["manual"]),
+        "auto_kinds": sorted(auto_kinds),
+        "manual_kinds": sorted(manual_kinds),
+        "archived": len(applied["archived"]),
+        "live_before_apply": live_after_preview,
+        "pinned_survived": True,
+        "dry_run_wrote_nothing": result["archived"] == [],
+    }
+
+
+@check("compact: anchors are preserved, or the row is refused")
+def t_compact(conn, ctx):
+    scope = _scope("compact-user")
+    # Every anchor sits in the head of the row, inside the cut window, so this row is
+    # safe to shorten -- the anchors must survive the cut.
+    safe_text = (
+        "部署流程：文档 https://example.invalid/runbook，脚本 /opt/deploy/run.sh，"
+        "版本 v2.4.1，窗口 ROLLBACK_WINDOW_MINUTES=120。"
+    ) + "（补充说明文字，用于把正文撑长到需要裁剪的长度。）" * 6
+    unsafe_text = (
+        "另一条很长的说明，前面的内容都很普通。" * 20
+        + "关键入口是 https://example.invalid/secret-runbook，千万别丢。"
+    )
+    safe_id = store.put_memory(
+        conn, scope=scope, target="ops", content=safe_text,
+        authority="operator", source="operator", importance=0.5,
+    )
+    unsafe_id = store.put_memory(
+        conn, scope=scope, target="ops", content=unsafe_text,
+        authority="operator", source="operator", importance=0.5,
+    )
+
+    plan = compact_mod.plan(conn, scope, max_chars_per_row=120, stale_days=0)
+    planned_ids = {item["id"] for item in plan["shorten"]}
+    refused_ids = {item["id"] for item in plan["refused"]}
+    assert safe_id in planned_ids, plan["refused"]
+    assert unsafe_id in refused_ids, plan["shorten"]
+    refusal = next(item for item in plan["refused"] if item["id"] == unsafe_id)
+    assert "anchor_loss" == refusal["reason"] and refusal["dropped"], refusal
+
+    outcome = compact_mod.apply(
+        conn, scope, plan, apply=True, backup_before=True, backup_dir=str(Path(ctx["dir"]) / "backups")
+    )
+    assert outcome["backup"], "compaction applied without taking a snapshot first"
+    assert not outcome["refused_on_revalidation"], outcome
+
+    shortened = store.get(conn, safe_id)
+    assert shortened is not None and len(shortened.content) < len(safe_text), shortened
+    for anchor in ("https://example.invalid/runbook", "/opt/deploy/run.sh", "v2.4.1", "ROLLBACK_WINDOW_MINUTES"):
+        assert anchor in shortened.content, f"anchor lost during shortening: {anchor}"
+    untouched = store.get(conn, unsafe_id)
+    assert untouched is not None and untouched.content == unsafe_text, "a refused row was modified"
+    return {
+        "planned_shorten": len(plan["shorten"]),
+        "refused_anchor_loss": len(plan["refused"]),
+        "planned_demote": len(plan["demote"]),
+        "before_chars": len(safe_text),
+        "after_chars": len(shortened.content),
+        "anchors_kept": sorted(
+            {a for hits in compact_mod.anchors(safe_text).values() for a in hits}
+        )[:6],
+        "refused_row_untouched": untouched.content == unsafe_text,
+        "backup_taken": bool(outcome["backup"]),
+    }
+
+
+@check("golden: hit rates, MRR and the negative half of the test")
+def t_golden(conn, ctx):
+    scope = _scope("golden-user")
+    keeper = store.put_memory(
+        conn, scope=scope, target="project", content="发布固定在周五下午执行，回滚窗口两小时。",
+        authority="user", source="operator", importance=0.8, memory_type="decision",
+    )
+    store.put_memory(
+        conn, scope=scope, target="project", content="备份策略为每日增量、每周全量，保留三十份。",
+        authority="operator", source="operator", importance=0.6,
+    )
+    cases = [
+        golden_mod.Case(query="发布窗口", expect_ids=(keeper,)),
+        golden_mod.Case(query="备份策略", expect_tokens=("每日增量",)),
+        golden_mod.Case(query="不存在的主题词", expect_tokens=("绝不可能出现的词",)),
+        golden_mod.Case(query="发布窗口", forbid_ids=(keeper,)),
+    ]
+    report = golden_mod.run(conn, scope, cases, limit=10)
+    assert report["cases"] == 4, report
+    assert report["hit_at"]["@1"] >= 2, report["hit_at"]
+    assert report["mrr"] > 0.3, report["mrr"]
+    assert len(report["misses"]) == 1, report["misses"]
+    assert report["misses"][0]["diagnosis"], report["misses"]
+    assert len(report["forbidden_violations"]) == 1, report["forbidden_violations"]
+    assert golden_mod.load(None), "the example case file did not load"
+    return {
+        "hit_at": report["hit_at"],
+        "hit_rate": report["hit_rate"],
+        "mrr": report["mrr"],
+        "misses": len(report["misses"]),
+        "miss_diagnosis": report["misses"][0]["diagnosis"],
+        "forbidden_violations": len(report["forbidden_violations"]),
+    }
 
 
 def run(keep: bool = False, db_dir: str | None = None) -> tuple[int, list[dict[str, Any]]]:

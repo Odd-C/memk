@@ -112,6 +112,12 @@ retrieved on demand. Recall frequency moves `importance`, which decides what
 re-enters the view. Pinned entries are exempt from both the budget cut and the
 reweighting.
 
+Which targets that means in practice is `VIEW_TARGETS` in `view.py`: `memory`
+carries the rules and durable facts, `user` carries the profile, and every other
+target is recall-only. The first version rendered only `memory`, which quietly
+dropped the profile from every prompt -- the design said "safety rules and the user
+profile", and the code said otherwise. A self test now pins the pair down.
+
 ## What is intentionally not built
 
 - **No vector backend bundled.** The interface exists and the store works

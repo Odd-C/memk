@@ -343,21 +343,28 @@ def rows_for_view(
     conn: sqlite3.Connection,
     scope: scope_mod.Scope,
     *,
-    target: str = "memory",
+    targets: Sequence[str] = ("memory", "user"),
     limit: int = 100,
 ) -> list[MemoryRecord]:
-    """Live, non-archived rows eligible for the injection view."""
+    """Live, non-archived rows eligible for the injection view.
+
+    Two targets, not one: ``memory`` holds the rules and facts that are always
+    relevant, and ``user`` holds the profile. Both belong in the injection layer by
+    the tiering design, so a view that rendered only one of them would quietly drop
+    the other from every prompt. Other targets are recall-only by definition.
+    """
 
     marks, params = scope_mod.placeholders(scope.readable())
+    target_marks = ",".join("?" * len(targets))
     rows = conn.execute(
         f"""
         SELECT * FROM memories
-        WHERE scope_id IN ({marks}) AND target=?
+        WHERE scope_id IN ({marks}) AND target IN ({target_marks})
           AND lifecycle NOT IN ('archived','rejected','candidate')
         ORDER BY pinned DESC, importance DESC, updated_at DESC
         LIMIT ?
         """,
-        [*params, target, limit],
+        [*params, *targets, limit],
     ).fetchall()
     return [MemoryRecord.from_row(r) for r in rows]
 

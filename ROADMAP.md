@@ -33,15 +33,22 @@ The kernel is usable by a host without the host owning the schema:
 Still open in this area: the hooks are plain method calls, not a registered plugin
 interface. Wiring them into a specific host is the next concrete step.
 
-## v0.4 — the ops layer
+## v0.4 — the ops layer (done)
 
-Our existing operator scripts already do the right things; they need to point at
-this store instead of the previous one:
+The ops layer lives inside the package rather than beside it, because the kernel owns
+the schema:
 
-- backup with a rolling window plus a permanent monthly snapshot;
-- compaction of the injection view with anchor validation and a marker whitelist;
-- dedupe (exact, substring, prefix-similar) with the human-confirm path intact;
-- the golden recall set, with recall\@k and MRR reported rather than a pass rate.
+- ✅ backup with a rolling window plus permanent monthly snapshots, and verification
+  that restores the snapshot instead of checking that a file exists;
+- ✅ compaction of the injection view with anchor validation and fail-closed refusal;
+- ✅ dedupe (exact, substring, prefix-similar) with the human-confirm path intact and
+  archival instead of deletion;
+- ✅ the golden recall set, reporting hit\@k and MRR plus a miss diagnosis and
+  forbidden-id violations.
+
+Not carried over: the remote mirror. It belongs to a deployment, not to the kernel;
+the snapshot directory is local and its location is the caller's choice. See
+`RUNBOOK.md` for the wiring.
 
 Source: our own operations notes, including the backup-isolation rule and the
 "compaction cannot be a silent no-op" rule.
