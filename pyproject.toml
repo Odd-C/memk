@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memk"
+version = "0.1.0"
+description = "A self-authored, dependency-free memory kernel for agents: journal capture, SQLite truth store, deterministic admission, scoped hybrid recall."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+keywords = ["agent", "memory", "sqlite", "retrieval", "cjk"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+# No runtime dependencies on purpose. The kernel uses SQLite and the standard
+# library; an embedding channel is optional and plugs in by interface.
+dependencies = []
+
+[project.scripts]
+memk = "memk.cli:main"
+
+[project.urls]
+Documentation = "DESIGN.md"
+
+[tool.setuptools]
+packages = ["memk"]
