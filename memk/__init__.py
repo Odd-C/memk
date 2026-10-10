@@ -1,4 +1,4 @@
-"""memk - a self-authored memory kernel for agents.
+"""memk - a memory kernel for agents.
 
 The package is deliberately small and dependency-free: SQLite and the standard
 library, nothing else. Optional capabilities (an embedding channel, a host

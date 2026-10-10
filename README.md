@@ -1,31 +1,25 @@
 # memk
 
-A self-authored memory kernel for agents. **No runtime dependencies** — SQLite and
-the standard library, nothing else. No embedding model, no vector database, no
-service. Everything below runs on a laptop with the Python that ships with it.
-
-```bash
-python3 -m memk.selftest          # 27 checks, end to end, on a temporary database
-```
-
-**MIT** · **Python 3.10+** · **zero dependencies** · **status: alpha**
+A memory kernel for agents. **No runtime dependencies** — SQLite and the standard
+library, nothing else. No embedding model, no vector database, no service.
 
 ```bash
 git clone https://github.com/Odd-C/memk.git && cd memk
-python3 -m memk.selftest          # no install step; nothing to build
+python3 -m memk.selftest          # 27 checks, end to end; no install step
 ```
+
+**MIT** · **Python 3.10+** · **zero dependencies** · **status: alpha**
 
 ---
 
 ## Why this exists
 
 Agent memory usually fails in one of two ways: it recalls something that was never
-true, or it forgets something that was. Both are caused by the same omission —
-memory treated as text rather than as a claim with a standing, a source, and an
-expiry.
+true, or it forgets something that was. Both come from the same omission — memory
+treated as text rather than as a claim with a standing, a source, and an expiry.
 
-`memk` treats every durable fact as a claim, and makes four questions answerable
-at the moment of use:
+`memk` treats every durable fact as a claim, and makes four questions answerable at
+the moment of use:
 
 | Question | Mechanism |
 |---|---|
@@ -34,12 +28,13 @@ at the moment of use:
 | **Where is the original?** | Every admitted fact carries evidence rows pointing into a chunked journal, and a quote is only reported complete when the rebuild passes a hash check. |
 | **Can it become a fact by itself?** | No. Automatic promotion requires non-assistant evidence; every failure of evidence denies, with a reason code. |
 
-## Correctness properties, measured not asserted
+## Eight failure modes, eight self tests
 
-The kernel was written against eight defects we measured in a previous
-arrangement (full list and provenance in `DESIGN.md`). Each is now a self test:
+Each of these was observed running before it was designed out. Every one has a check
+in the self test, so the answer is reproducible rather than asserted — run
+`python3 -m memk.selftest` and read the list.
 
-| Defect we had | Check in this repo |
+| Failure mode | Where the answer lives |
 |---|---|
 | A two-character Chinese query matched nothing, because the word index collapsed a whole phrase into one token | `recall: two-character Chinese query matches (lexical, no embedder)` |
 | A missing embedding key silently downgraded semantic recall to string matching | No embedder is bundled at all; lexical recall for CJK is native |
@@ -197,16 +192,35 @@ restore   restored=true  source_rows=3  restored_rows=3  consistent=true
 - **Every optional capability must name itself.** A channel that cannot run is
   absent, not silently substituted.
 
-## Deliberately out of scope
+## Limits
 
-- No vector dependency is bundled: vectors live in SQLite and the channel is
-  optional, so lexical recall has to be good on its own terms first.
-- No account system, HTTP surface or remote API.
-- No agent-framework coupling: the kernel is importable and CLI-driven. Host
+Deliberately out of scope:
+
+- no vector dependency is bundled — vectors live in SQLite and the channel is
+  optional, so lexical recall has to be good on its own terms first;
+- no account system, HTTP surface or remote API;
+- no agent-framework coupling: the kernel is importable and CLI-driven, and host
   adapters belong outside the core.
+
+Known gaps, stated rather than discovered later:
+
+- destructive schema changes have no migration path; additive ones apply through
+  idempotent DDL, and the self test asserts a reopen keeps every row;
+- the render set is recorded per scope, not per consumer, so one host per scope for
+  now;
+- the semantic channel is brute force: every query reads all vectors in scope;
+- extraction is rule-based (speaker role plus a length floor); a model-driven
+  extractor belongs behind the gate, not in front of it.
+
+## Documentation
+
+| File | Contents |
+|---|---|
+| `DESIGN.md` | Why the design is the way it is: layers, lifecycle, and each failure mode with the answer it produced. |
+| `RUNBOOK.md` | Schedules, output conventions, the restore drill, and what to do when the doctor complains. |
+| `ROADMAP.md` | What is done, what is next, and what is known to be missing. |
 
 ## Licence
 
-MIT. See `LICENSE`. `DESIGN.md` records which parts of an earlier architecture were
-reused (the design) and which were rebuilt (the engine), so the provenance of every
-idea here is checkable.
+MIT — see `LICENSE`. No third-party code is included: the package is self-contained,
+and `DESIGN.md` documents the reasoning behind each decision.

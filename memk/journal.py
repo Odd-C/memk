@@ -11,8 +11,8 @@ traced back to the words it came from. Two properties make that trace trustworth
    compared against the recorded hash. If it does not match, the caller is told the
    content is incomplete instead of receiving a fragment labelled as the original.
 
-The previous arrangement linked one chunk and called it provenance. This is the
-correction.
+Linking one chunk and calling it provenance is not enough: the rest of the turn has
+to be recoverable, and the rebuild has to check out.
 """
 
 from __future__ import annotations

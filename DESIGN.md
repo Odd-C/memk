@@ -1,57 +1,26 @@
-# memk — design and reuse map
+# Design
 
-`memk` is a self-authored memory kernel for agents. It is written from our own
-design notes, not derived from any other memory project's code. This document
-records exactly which parts of our earlier architecture are reused, which are
-rebuilt, and why.
+How `memk` is put together, and why each decision is what it is.
 
-## What "reuse" means here
+## Failure modes this design answers
 
-We had a complete *architecture* before, and a borrowed *engine* underneath it.
-The architecture is ours: layered model, tiering rules, admission doctrine,
-freshness semantics, evaluation method, ops layer. The engine was never ours.
+Eight problems, each observed running before it was designed out. Every one has a
+check in the self test, so the answer is reproducible rather than asserted.
 
-So the kernel reuses the first and replaces the second.
+| # | Failure mode | The answer | Self test |
+|---|---|---|---|
+| 1 | **CJK lexical recall was broken.** The word index treated a whole Chinese run as one token, so common two-character words matched nothing and Chinese recall depended entirely on the vector channel. | Store a CJK n-gram shadow index beside the word index, so Chinese text is lexically searchable with no embedding model involved. | `recall: two-character Chinese query matches (lexical, no embedder)` |
+| 2 | **The embedder degraded silently.** A missing key fell back to a hash embedder, so semantic recall quietly became string matching. | The semantic channel is opt-in and self-declaring: no configuration means no channel, an unusable configuration means no channel with a stated reason, and every stored vector records the model that produced it. | `embed: absent by default, and nothing is substituted for it` |
+| 3 | **Two sources of truth drifted apart.** The injected file and the store were written independently and barely agreed. | The store is the only truth; the injected view is a projection with a recorded render set. | `view: budget respected, pinned survives, hand edit adopted` |
+| 4 | **Provenance was a link with no wording.** An extracted fact carried a log id, no excerpt and no checksum, so a quote could not be verified. | Every admitted memory stores evidence rows with an excerpt and a content hash, verified on read; `complete=true` only after the hash check passes. | `journal: chunking, reconstruction, tamper detection` |
+| 5 | **An inference ranked as a fact.** Ranking used one importance number with no notion of who said it. | Authority is a first-class field; inference and unknown are never presented as user-confirmed. | `audit: no promoted memory lacks human or tool evidence` |
+| 6 | **Bulk freshness marking degraded recall.** Marking many rows at once pushed their ranking down together. | Freshness is per-fact, the bulk path is refused by construction, and supersession keeps history instead of hiding it. | `freshness: bulk change refused, supersession keeps history` |
+| 7 | **A stalled lock could freeze the process.** Unbounded file locking let one slow holder hang the caller. | There is no file lock in the kernel at all: the only wait is SQLite's busy timeout, set once in the single connection factory so a writer cannot queue indefinitely. | enforced in `schema.connect`; no dedicated check |
+| 8 | **WAL was armed on a build with the reset defect.** The journal mode was switched unconditionally. | A single connection factory gates the journal mode and never live-downgrades an open database. | `schema: vulnerable WAL builds are gated, fixed ones are not` |
 
-| Asset | Status | Where it came from |
-|---|---|---|
-| 7-layer architecture model | **reused as the structural spec** | our own `architecture-deep-dive` notes |
-| hot/cold tiering (injection layer, heat/cool, pinned exemption) | **reused as behaviour** | our own tiering design |
-| four-ability scoring (durability / findability / currency / use) | **reused as the acceptance frame** | our own assessment model |
-| five-state audit (implemented → configured → reachable → populated → effective) | **reused as the review method** | our own audit methodology |
-| provenance grading + fail-closed admission | **reused as the core invariant** | our own write protocol |
-| freshness three-state + penalty table | **reused, values kept** | our own freshness work |
-| ops layer (backup, compaction, dedup, tuning, golden set, health) | **reused as-is** | 2686 lines we wrote |
-| agent-facing contracts | **reused as-is** | our own three contracts |
-| the engine (capture, store, retrieval, vectors) | **rebuilt from scratch** | this repository |
-| upstream patches | **not used** | dropped entirely |
+## The optional semantic channel
 
-## What the old engine got wrong (and the kernel fixes natively)
-
-These are not hypotheticals; each was measured and recorded in our own notes.
-They are the kernel's requirements.
-
-| # | Defect we recorded | Kernel's native answer |
-|---|---|---|
-| 1 | **CJK lexical recall was broken.** The FTS tokenizer treated a whole Chinese run as one token, so `火山引擎` matched nothing while `ComfyUI` matched. Chinese recall depended entirely on the vector channel. | Store a CJK n-gram shadow column and index it, so Chinese text is lexically searchable without an embedding model. |
-| 2 | **The embedder degraded silently.** A missing API key fell back to a 256-dimension hash embedder, so semantic recall silently became string matching. | The semantic channel is opt-in and self-declaring: no configuration means no channel, an unusable configuration means no channel with a stated reason, and every stored vector records which model produced it so two models can never be mixed in one ranking. |
-| 3 | **Two sources of truth.** The injected file and the store were written independently and did not agree (16 rows vs 61 rows, almost no overlap). | The store is the only truth. The injected view is a rendered projection with a recorded render set. |
-| 4 | **Auto-extracted memory carried a link but no evidence.** Provenance was a journal id with no excerpt and no hash, so "quote the original" was unverifiable. | Every admitted memory stores evidence rows with excerpt and content hash, verified on read. |
-| 5 | **A research/planning layer could outrank a confirmed fact.** Ranking used a single importance number with no authority notion. | Authority is a first-class field; `inference` and unknown never rank as user-confirmed. |
-| 6 | **Bulk freshness marking degraded recall.** Marking many rows "needs check" at once pushed ranking down and had to be rolled back. | Freshness is per-fact and the bulk path is absent by construction; the CLI refuses batch mutation without an explicit per-row flag. |
-| 7 | **A stalled lock could freeze the agent.** Unbounded file locking plus a shared connection meant one slow holder hung the event loop. | Every lock has a deadline; the request path never takes the writer connection. |
-| 8 | **WAL mode was armed unconditionally** on a build with a known reset defect. | A single connection factory gates the journal mode and never live-downgrades. |
-
-## Design
-
-### What the optional semantic channel changed
-
-Two design notes fed this, and both were ours: the embedder selection chain
-(rejecting a remote embedder for a private assistant, rejecting a hosted model that
-would move memory text off the machine, and settling on a local model) and the CPU
-latency measurements that made the choice defensible.
-
-The implementation keeps three of those conclusions as hard rules:
+Three rules make an optional channel safe to have at all:
 
 - **absence is a state, not a fallback** — `resolve()` returns `None` plus a reason
   rather than a weaker model, and the CLI prints that reason;
@@ -64,7 +33,7 @@ The interface has three implementations: an OpenAI-compatible endpoint (standard
 library only), a local sentence-transformers model loaded offline, and a
 deterministic test double that announces itself as a test double in its own name.
 
-### Layers (kept from the old model, now owned end to end)
+## Layers
 
 ```
    injection     view render      ← projection of the store, pinned-aware, budgeted
@@ -76,7 +45,7 @@ deterministic test double that announces itself as a test double in its own name
    capture       journal: chunked, role-tagged, hashed
 ```
 
-### The lifecycle, stated as a rule
+## The lifecycle, stated as a rule
 
 A memory is not "written"; it is **proposed, evidenced, admitted, and then
 current**. Each transition has a gate:
@@ -93,9 +62,11 @@ turn ──capture──► journal row (role, chunk, hash)
 
 The admission gate is the load-bearing part: a candidate becomes a memory only
 when its evidence includes a **non-assistant** role, or the operator promotes it
-explicitly. Everything else stays a candidate with a reason code.
+explicitly. Everything else stays a candidate with a reason code. The gate reads
+roles, never content, so a provenance check cannot leak the conversation into a
+decision log.
 
-### Freshness
+## Freshness
 
 | State | Penalty | Meaning |
 |---|---|---|
@@ -104,7 +75,7 @@ explicitly. Everything else stays a candidate with a reason code.
 | `needs_check` | small | awaiting verification; **never bulk-applied** |
 | `historical` | large | superseded, still recallable for audit |
 
-### Tiering
+## Tiering
 
 The injection view holds what is always relevant: safety rules, the user
 profile, and recently-used facts. Everything else lives in the store and is
@@ -118,15 +89,34 @@ target is recall-only. The first version rendered only `memory`, which quietly
 dropped the profile from every prompt -- the design said "safety rules and the user
 profile", and the code said otherwise. A self test now pins the pair down.
 
+## Why the ops layer is inside the package
+
+Backup, dedupe, compaction and the golden set could have been a folder of scripts
+beside the library. They are modules instead, because the kernel owns its schema:
+a script that guesses at the schema is one schema change away from being wrong, and
+one that writes without a snapshot is one bad run away from a support incident.
+
+Two behaviours in that layer are deliberate and worth knowing:
+
+- **verification restores.** A snapshot is proven by opening it, running
+  `PRAGMA integrity_check` and comparing checksum and row counts against the
+  manifest. A refused snapshot also blocks a restore, so a bad backup cannot
+  overwrite a live store.
+- **compaction fails closed.** Shortening a row is refused outright if it would
+  drop an anchor — a URL, a path, a version, a date, an environment variable name,
+  a long id — and the refusal names the anchors it would have lost.
+
 ## What is intentionally not built
 
 - **No vector backend bundled.** The interface exists and the store works
   lexically first; a vector companion is optional, pluggable, and must name
-  itself. This follows from defect #2: an optional dependency must not be able to
-  silently become the whole retrieval story.
+  itself. An optional dependency must not be able to silently become the whole
+  retrieval story.
 - **No multi-user server.** Scope is per-user and enforced in SQL, but there is
   no account system, no HTTP surface, no remote API.
 - **No auto-deletion.** Supersession and archival only; hard delete requires an
   explicit operator command with a backup.
 - **No agent framework coupling.** The kernel is importable and CLI-driven; the
   adapter to any particular agent host lives outside the core.
+- **No on-disk migration for destructive changes.** Additive schema changes apply
+  through idempotent DDL, and the self test asserts a reopen keeps every row.

@@ -5,10 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "memk"
 version = "0.1.0"
-description = "A self-authored, dependency-free memory kernel for agents: journal capture, SQLite truth store, deterministic admission, scoped hybrid recall."
+description = "A dependency-free memory kernel for agents: journal capture, SQLite truth store, deterministic admission, scoped hybrid recall."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+authors = [
+  { name = "Odd_Chow" },
+]
 keywords = ["agent", "memory", "sqlite", "retrieval", "cjk"]
 classifiers = [
   "Development Status :: 3 - Alpha",

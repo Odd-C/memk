@@ -7,7 +7,7 @@ journal-mode gate and the busy timeout cannot drift apart.
 Design note: the lexical index keeps two views of the same text -- a token table
 for word-boundary languages and an n-gram table for languages that do not use
 spaces. Lexical recall for CJK must not depend on an embedding model being
-present, which is what the previous arrangement got wrong.
+present.
 """
 
 from __future__ import annotations

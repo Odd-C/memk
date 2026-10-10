@@ -18,8 +18,8 @@ letting it become the only one:
   constructor is told not to reach the network;
 - ✅ per-vector provenance, so two models can never be mixed in one ranking.
 
-Source: our own hot/cold tiering notes on embedder selection and the CPU latency
-measurements recorded there.
+Design basis: embedder selection criteria plus measured CPU latency, so the choice
+stays defensible rather than assumed.
 
 ## v0.3 — the host adapter (done)
 
@@ -50,8 +50,8 @@ Not carried over: the remote mirror. It belongs to a deployment, not to the kern
 the snapshot directory is local and its location is the caller's choice. See
 `RUNBOOK.md` for the wiring.
 
-Source: our own operations notes, including the backup-isolation rule and the
-"compaction cannot be a silent no-op" rule.
+Design basis: two rules carry over — backups must be isolated per deployment, and
+compaction must never be a silent no-op.
 
 ## v0.5 — typed relations (from the graph notes)
 
@@ -60,7 +60,8 @@ Source: our own operations notes, including the backup-isolation rule and the
 - two-hop expansion in recall, ranked separately from direct hits;
 - contradiction detection at admission time, which is where it is cheap.
 
-Source: our own memory-graph engineering notes.
+Design basis: typed edges are what contradiction detection needs; a flat list of
+memories cannot express "these two disagree".
 
 ## Evaluation work, alongside everything
 
@@ -70,7 +71,8 @@ Source: our own memory-graph engineering notes.
   numbers with the evidence behind each;
 - a cold-start latency budget and a capacity curve at 1k / 10k / 100k rows.
 
-Source: our own assessment framework and production audit method.
+Design basis: measure recall with hit rates and negative samples, not with a
+pass/fail count.
 
 ## Known gaps, stated plainly
 
